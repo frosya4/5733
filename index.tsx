@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, createContext, useContext, useCall
 import { createRoot } from 'react-dom/client';
 import JSZip from 'jszip';
 import { Upload, Trash2, Users, Trophy, Swords, LayoutDashboard, Activity, Search, ChevronDown, ChevronUp, ArrowLeft, Gamepad2, BarChart2, X, Crosshair, Bomb, Target, Shield, Shuffle, Ban, Users2, ExternalLink, Flame, Footprints, Skull, Zap, LogOut, Save, RefreshCw, CheckSquare, Square, Calendar, ArrowRightLeft, Map as MapIcon, List, Clock, CheckCircle, AlertTriangle, Info, Sparkles, Send, UserCog, Edit2, Scale, FileJson, ArrowRight, Filter, FilePenLine, Menu, LayoutGrid, PieChart, ArrowUp, ArrowDown, Crown, Medal } from 'lucide-react';
+// @ts-ignore
 import { initializeApp } from "firebase/app";
 import { getFirestore, collection, getDocs, doc, setDoc, deleteDoc, writeBatch } from "firebase/firestore";
 
@@ -1165,7 +1166,7 @@ const MatchesList: React.FC<{ onSelect: (m: Match) => void }> = ({ onSelect }) =
                  return sortDir === 'asc' ? valA - valB : valB - valA;
             }
 
-            return sortDir === 'asc' ? valA - valB : valB - valA;
+            return sortDir === 'asc' ? (valA as any) - (valB as any) : (valB as any) - (valA as any);
         });
     }, [matches, search, sort, sortDir]);
 
@@ -1281,15 +1282,95 @@ const MatchesList: React.FC<{ onSelect: (m: Match) => void }> = ({ onSelect }) =
 // --- Player Profile ---
 const PlayerProfile: React.FC<{ playerId: string, onBack: () => void }> = ({ playerId, onBack }) => {
     const { allPlayers, matches } = useStats();
+    const [showAllMatches, setShowAllMatches] = useState(false);
+
     const player = allPlayers.find(p => String(p.steam_id) === playerId);
     
     if (!player) return <div>Player not found</div>;
 
-    // Get recent matches for this player
-    const playerMatches = matches
+    // Get matches for this player
+    const playerMatches = useMemo(() => matches
         .filter(m => m.data.some(p => String(p.steam_id) === playerId))
-        .sort((a,b) => b.timestamp - a.timestamp)
-        .slice(0, 5);
+        .sort((a,b) => b.timestamp - a.timestamp), [matches, playerId]);
+
+    const displayedMatches = showAllMatches ? playerMatches : playerMatches.slice(0, 5);
+
+    // Calculate Best Teammate
+    const bestTeammate = useMemo(() => {
+        const teammateStats: Record<string, { name: string, matches: number, ratingSum: number }> = {};
+        
+        playerMatches.forEach(match => {
+             const me = match.data.find(p => String(p.steam_id) === playerId);
+             if (!me) return;
+             
+             // Identify teammates
+             const teammates = match.data.filter(p => 
+                 String(p.steam_id) !== playerId && 
+                 (p.last_team_name === me.last_team_name || p.last_side === me.last_side)
+             );
+             
+             teammates.forEach(tm => {
+                 const tmId = String(tm.steam_id);
+                 if (!teammateStats[tmId]) teammateStats[tmId] = { name: tm.name, matches: 0, ratingSum: 0 };
+                 teammateStats[tmId].matches += 1;
+                 teammateStats[tmId].ratingSum += (typeof tm.hltv_3_0_score === 'number' ? tm.hltv_3_0_score : 0);
+             });
+        });
+
+        const sorted = Object.values(teammateStats).sort((a,b) => b.matches - a.matches);
+        return sorted.length > 0 ? sorted[0] : null;
+    }, [playerMatches, playerId]);
+
+    // Calculate Top Weapons
+    const topWeapons = useMemo(() => {
+        if (!player.weapon_stats) return [];
+        return Object.entries(player.weapon_stats)
+            .map(([name, count]) => ({ name, count }))
+            .sort((a,b) => b.count - a.count)
+            .slice(0, 3);
+    }, [player]);
+
+    // Calculate Best Maps
+    const bestMaps = useMemo(() => {
+        const stats: Record<string, number> = {};
+        playerMatches.forEach(m => {
+            const map = formatMapName(m.filename);
+            stats[map] = (stats[map] || 0) + 1;
+        });
+        return Object.entries(stats)
+            .sort((a,b) => b[1] - a[1])
+            .slice(0, 3)
+            .map(([name, count]) => ({ name, count }));
+    }, [playerMatches]);
+
+    // Calculate Top Rivals (Most Duels)
+    const topRivals = useMemo(() => {
+        const stats: Record<string, { name: string, kills: number, deaths: number, total: number }> = {};
+        
+        playerMatches.forEach(m => {
+            const pStats = m.data.find(p => String(p.steam_id) === playerId);
+            if(!pStats || !pStats.duels) return;
+
+            Object.entries(pStats.duels).forEach(([oid, d]: [string, any]) => {
+                let name = d.opponent_name || oid;
+                // Try to find name in match data if it looks like an ID
+                if (name === oid) {
+                    const opp = m.data.find(p => String(p.steam_id) === oid);
+                    if (opp) name = opp.name;
+                }
+
+                if (!stats[oid]) stats[oid] = { name, kills: 0, deaths: 0, total: 0 };
+                stats[oid].kills += d.kills;
+                stats[oid].deaths += d.deaths;
+                stats[oid].total += (d.kills + d.deaths);
+                if (name !== oid) stats[oid].name = name;
+            });
+        });
+
+        return Object.values(stats)
+            .sort((a,b) => b.total - a.total)
+            .slice(0, 3);
+    }, [playerMatches, playerId]);
 
     return (
         <div className="p-4 md:p-6 h-full flex flex-col pb-20 md:pb-6 animate-fade-in overflow-y-auto">
@@ -1297,6 +1378,7 @@ const PlayerProfile: React.FC<{ playerId: string, onBack: () => void }> = ({ pla
                 <ArrowLeft size={18}/> Back
             </button>
 
+            {/* Profile Header */}
             <div className="flex items-center gap-6 mb-8">
                 <div className="w-20 h-20 bg-gradient-to-br from-app-accent to-purple-500 rounded-2xl flex items-center justify-center text-3xl font-bold text-white shadow-lg shadow-app-accent/20">
                     {player.name.charAt(0).toUpperCase()}
@@ -1311,6 +1393,7 @@ const PlayerProfile: React.FC<{ playerId: string, onBack: () => void }> = ({ pla
                 </div>
             </div>
 
+            {/* Stat Cards */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
                 <div className="bg-app-card p-4 rounded-xl border border-app-cardHover">
                     <div className="text-app-textMuted text-xs uppercase font-bold mb-1">Rating 2.0</div>
@@ -1330,9 +1413,29 @@ const PlayerProfile: React.FC<{ playerId: string, onBack: () => void }> = ({ pla
                 </div>
             </div>
 
-            <h3 className="font-bold text-xl mb-4">Recent Performance</h3>
-            <div className="space-y-2">
-                {playerMatches.map(m => {
+            {/* Recent Performance with Styled Toggle Button */}
+            <div className="flex justify-between items-center mb-4">
+                <h3 className="font-bold text-xl">Recent Performance</h3>
+                 {playerMatches.length > 5 && (
+                     <button 
+                        onClick={() => setShowAllMatches(!showAllMatches)}
+                        className="bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold py-1.5 px-4 rounded-lg border border-zinc-700 transition-colors flex items-center gap-2"
+                     >
+                        {showAllMatches ? (
+                            <>
+                                <ChevronUp size={14} /> Show Less
+                            </>
+                        ) : (
+                            <>
+                                <ChevronDown size={14} /> View All Matches
+                            </>
+                        )}
+                     </button>
+                 )}
+            </div>
+            
+            <div className="space-y-2 mb-8">
+                {displayedMatches.map(m => {
                     const pStats = m.data.find(p => String(p.steam_id) === playerId);
                     if(!pStats) return null;
                     const rating = calculateRating(pStats);
@@ -1358,6 +1461,102 @@ const PlayerProfile: React.FC<{ playerId: string, onBack: () => void }> = ({ pla
                         </div>
                     );
                 })}
+            </div>
+
+            {/* Combat Records Section */}
+            <div className="animate-fade-in">
+                <h3 className="font-bold text-xl mb-4 flex items-center gap-2"><Swords className="text-red-400"/> Combat Records</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Best Teammate (Left) */}
+                    <div className="bg-zinc-900/50 p-6 rounded-xl border border-zinc-800 flex items-center gap-4 relative overflow-hidden group">
+                         <div className="absolute right-0 top-0 p-6 opacity-5 group-hover:opacity-10 transition-opacity"><Users2 size={100}/></div>
+                         <div className="w-12 h-12 bg-app-accent/20 rounded-full flex items-center justify-center text-app-accent">
+                             <Crown size={24} />
+                         </div>
+                         <div className="z-10">
+                             <div className="text-zinc-500 text-xs uppercase font-bold mb-1">Best Teammate</div>
+                             {bestTeammate ? (
+                                 <>
+                                    <div className="font-black text-xl text-white">{bestTeammate.name}</div>
+                                    <div className="text-app-textMuted text-sm mt-1">
+                                        Played <span className="text-white font-bold">{bestTeammate.matches}</span> matches together
+                                    </div>
+                                 </>
+                             ) : (
+                                 <div className="text-zinc-500 italic">No teammates found</div>
+                             )}
+                         </div>
+                    </div>
+
+                    {/* Top 3 Weapons (Right) */}
+                    <div className="bg-zinc-900/50 p-6 rounded-xl border border-zinc-800 relative overflow-hidden group">
+                         <div className="absolute right-0 top-0 p-6 opacity-5 group-hover:opacity-10 transition-opacity"><Crosshair size={100}/></div>
+                         <div className="flex items-center gap-2 mb-3 z-10 relative">
+                             <Crosshair size={16} className="text-orange-500"/>
+                             <span className="text-zinc-500 text-xs uppercase font-bold">Top Weapons</span>
+                         </div>
+                         <div className="space-y-3 z-10 relative">
+                             {topWeapons.length > 0 ? topWeapons.map((w, i) => (
+                                 <div key={w.name} className="flex items-center justify-between">
+                                     <div className="flex items-center gap-2">
+                                         <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${i===0 ? 'bg-yellow-500 text-black' : 'bg-zinc-800 text-zinc-500'}`}>{i+1}</div>
+                                         <span className="text-white font-medium capitalize">{w.name}</span>
+                                     </div>
+                                     <span className="text-zinc-400 font-mono text-sm">{w.count} Kills</span>
+                                 </div>
+                             )) : (
+                                 <div className="text-zinc-500 italic">No weapon stats available</div>
+                             )}
+                         </div>
+                    </div>
+
+                    {/* Best Maps (Left - New) */}
+                    <div className="bg-zinc-900/50 p-6 rounded-xl border border-zinc-800 relative overflow-hidden group">
+                         <div className="absolute right-0 top-0 p-6 opacity-5 group-hover:opacity-10 transition-opacity"><MapIcon size={100}/></div>
+                         <div className="flex items-center gap-2 mb-3 z-10 relative">
+                             <MapIcon size={16} className="text-blue-400"/>
+                             <span className="text-zinc-500 text-xs uppercase font-bold">Best Maps</span>
+                         </div>
+                         <div className="space-y-3 z-10 relative">
+                             {bestMaps.length > 0 ? bestMaps.map((m, i) => (
+                                 <div key={m.name} className="flex items-center justify-between">
+                                     <div className="flex items-center gap-2">
+                                         <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${i===0 ? 'bg-blue-500 text-white' : 'bg-zinc-800 text-zinc-500'}`}>{i+1}</div>
+                                         <span className="text-white font-medium">{m.name}</span>
+                                     </div>
+                                     <span className="text-zinc-400 font-mono text-sm">{m.count} Matches</span>
+                                 </div>
+                             )) : (
+                                 <div className="text-zinc-500 italic">No map data available</div>
+                             )}
+                         </div>
+                    </div>
+
+                    {/* Top Rivals (Right - New) */}
+                    <div className="bg-zinc-900/50 p-6 rounded-xl border border-zinc-800 relative overflow-hidden group">
+                         <div className="absolute right-0 top-0 p-6 opacity-5 group-hover:opacity-10 transition-opacity"><Swords size={100}/></div>
+                         <div className="flex items-center gap-2 mb-3 z-10 relative">
+                             <Swords size={16} className="text-red-400"/>
+                             <span className="text-zinc-500 text-xs uppercase font-bold">Top Rivals</span>
+                         </div>
+                         <div className="space-y-3 z-10 relative">
+                             {topRivals.length > 0 ? topRivals.map((r, i) => (
+                                 <div key={r.name} className="flex items-center justify-between">
+                                     <div className="flex items-center gap-2">
+                                         <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${i===0 ? 'bg-red-500 text-white' : 'bg-zinc-800 text-zinc-500'}`}>{i+1}</div>
+                                         <span className="text-white font-medium truncate max-w-[100px]">{r.name}</span>
+                                     </div>
+                                     <div className="text-right">
+                                         <div className="text-zinc-400 font-mono text-sm">{r.total} Duels</div>
+                                         <div className="text-xs text-zinc-600 font-mono">{r.kills} - {r.deaths}</div>
+                                     </div>
+                                 </div>
+                             )) : (
+                                 <div className="text-zinc-500 italic">No duel data available</div>
+                             )}
+                         </div>
+                    </div>
+                </div>
             </div>
         </div>
     );
